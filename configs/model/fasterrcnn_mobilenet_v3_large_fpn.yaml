@@ -1,0 +1,6 @@
+name: fasterrcnn_mobilenet_v3_large_fpn
+pretrained: true
+trainable_backbone_layers: 6
+
+score_thresh: 0.5
+max_detections: 50

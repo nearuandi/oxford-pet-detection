@@ -1,0 +1,11 @@
+defaults:
+  - paths: paths
+  - dataset: oxford_pet
+  - model: fasterrcnn_resnet50_fpn_v2
+  - train: train
+  - exp: base
+  - _self_
+
+hydra:
+  job:
+    chdir: false

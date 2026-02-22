@@ -1,0 +1,6 @@
+name: fasterrcnn_resnet50_fpn_v2
+pretrained: true
+trainable_backbone_layers: 3
+
+score_thresh: 0.5
+max_detections: 50

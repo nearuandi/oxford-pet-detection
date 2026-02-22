@@ -1,0 +1,16 @@
+name: oxford_pet
+root: ${paths.data_dir}
+
+images_dir: images
+masks_dir: annotations/trimaps
+
+use_official_trainval: true
+train_ratio: 0.9
+seed: 42
+
+label_mode: pet
+
+num_classes: 2
+class_names: ["__background__", "pet"]
+
+image_size: null
