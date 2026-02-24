@@ -1,50 +1,76 @@
-from collections.abc import Iterable
-
+from typing import Any
+from collections import defaultdict
 import torch
 import torch.nn as nn
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import autocast, GradScaler
+from torch.utils.data import DataLoader
 
 
 def train_one_epoch(
     model: nn.Module,
-    loss_fn: nn.Module,
-    data_loader: Iterable,
-    optimizer: torch.optim.Optimizer,
+    train_loader: DataLoader,
     device: torch.device,
-    scaler: GradScaler | None,
-    amp: bool,
-    log_interval: int = 20,
-) -> dict:
+    optimizer: torch.optim.Optimizer,
+    scaler: GradScaler | None = None,
+    amp: bool = True,
+) -> dict[str, float]:
 
     model.train()
 
-    total_loss = 0.0
-    n = 0
+    use_autocast = bool(amp) and (device.type == "cuda")
+    use_scaler = use_autocast and (scaler is not None)
 
-    for step, (images, targets) in enumerate(data_loader, start=1):
-        images = [img.to(device) for img in images]
-        targets = [{k: (v.to(device) if torch.is_tensor(v) else v) for k, v in t.items() if k != "class_names"} for t in targets]
+    sum_loss = 0.0
+    sum_count = 0
+    # key 없으면 0.0
+    loss_sums = defaultdict(float)
+
+    for images, targets in train_loader:
+        # images: list[Tensor], targets: list[dict]
+        x = [img.to(device, non_blocking=True) for img in images]
+
+        y: list[dict[str, Any]] = []
+        for t in targets:
+            d: dict[str, Any] = {}
+            # tensor 만
+            for k, v in t.items():
+                d[k] = v.to(device, non_blocking=True) if torch.is_tensor(v) else v
+            y.append(d)
 
         optimizer.zero_grad(set_to_none=True)
 
-        if amp and scaler is not None:
-            with autocast():
-                loss_dict = model(images, targets)
-                loss = sum(loss_dict.values())
+        with autocast(device_type=device.type, enabled=use_autocast):
+            # loss_dict = {"loss_classifier": tensor(0.31), ...}
+            loss_dict = model(x, y)
+            loss = sum(loss_dict.values())
 
+        if use_scaler:
+            assert scaler is not None
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
         else:
-            loss_dict = model(images, targets)
-            loss = sum(loss_dict.values())
             loss.backward()
             optimizer.step()
 
-        total_loss += float(loss.item())
-        n += 1
+        bs = len(x)
+        sum_loss += loss.item() * bs
+        sum_count += bs
 
-        if log_interval > 0 and step % log_interval == 0:
-            print(f"  step={step:04d} loss={float(loss.item()):.4f}")
+        # loss breakdown 누적
+        for k, v in loss_dict.items():
+            # loss_sums["loss_classifier"] =  0.31 * bs}
+            loss_sums[k] += float(v.item()) * bs
 
-    return {"train_loss": total_loss / max(n, 1)}
+    train_loss = sum_loss / max(1, sum_count)
+    lr = float(optimizer.param_groups[0]["lr"])
+
+    train_metrics = {
+        "train_loss": float(train_loss),
+        "lr": lr
+    }
+    for k, s in loss_sums.items():
+        # "loss/loss_classifier": loss_sums["loss_classifier"] / sum_count
+        train_metrics[f"loss/{k}"] = float(s / max(1, sum_count))
+
+    return train_metrics

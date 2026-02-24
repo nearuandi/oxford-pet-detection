@@ -1,11 +1,11 @@
 seed: 42
-device: auto
 
-num_epochs: 10
-batch_size: 4
-num_workers: 2
+num_epochs: 15
+batch_size: 8
+num_workers: 4
 pin_memory: true
 persistent_workers: true
+drop_last: true
 
 amp: true
 
@@ -20,16 +20,14 @@ scheduler:
   factor: 0.5
   patience: 2
   min_lr: 1.0e-7
+  threshold: 1.0e-4
 
 metric:
-  score_thr: 0.5
-  iou_thr: 0.5
+  score_threshold: 0.5
+  iou_threshold: 0.5
 
-log_interval: 20
 save:
-  monitor: val_iou_mean
-  mode: max
-  keep_last: true
+  keep_last: false
 
 augment:
   hflip_p: 0.5

@@ -1,108 +1,145 @@
 from pathlib import Path
+import time
 
 import torch
 import torch.nn as nn
 from omegaconf import DictConfig
-from torch.cuda.amp import GradScaler
+from torch.amp import GradScaler
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader
 
-from oxford_pet_detection.engine.loops.evaluate_one_epoch import evaluate_one_epoch
-from oxford_pet_detection.engine.loops.train_one_epoch import train_one_epoch
-from oxford_pet_detection.utils import ensure_dir, save_checkpoint
+from .loops.train_one_epoch import train_one_epoch
+from .loops.evaluate_one_epoch import evaluate_one_epoch
+from oxford_pet_detection.utils import ensure_dir, save_checkpoint, save_config, save_history
 
 
 class Trainer:
     def __init__(
         self,
         model: nn.Module,
-        loss_fn: nn.Module,
         cfg: DictConfig,
         device: torch.device,
     ) -> None:
-        self.model = model
-        self.loss_fn = loss_fn
         self.cfg = cfg
         self.device = device
+        self.model = model.to(device)
+
+        self.train = cfg.train
 
         self.optimizer = AdamW(
             params=[p for p in self.model.parameters() if p.requires_grad],
-            lr=float(cfg.train.optimizer.lr),
-            weight_decay=float(cfg.train.optimizer.weight_decay),
+            lr=self.train.optimizer.lr,
+            weight_decay=self.train.optimizer.weight_decay,
         )
 
         self.scheduler = ReduceLROnPlateau(
             optimizer=self.optimizer,
-            mode=str(cfg.train.scheduler.mode),
-            factor=float(cfg.train.scheduler.factor),
-            patience=int(cfg.train.scheduler.patience),
-            min_lr=float(cfg.train.scheduler.min_lr),
+            mode=self.train.scheduler.mode,
+            factor=self.train.scheduler.factor,
+            patience=self.train.scheduler.patience,
+            min_lr=self.train.scheduler.min_lr,
         )
 
-        self.amp = bool(cfg.train.amp)
-        self.scaler = GradScaler(enabled=self.amp)
+        self.amp_enabled = bool(self.train.amp) and device.type == "cuda"
+        self.scaler = GradScaler(enabled=self.amp_enabled)
 
-        self.monitor = str(cfg.train.save.monitor)
-        self.monitor_mode = str(cfg.train.save.mode)
+        self.keep_last = bool(self.train.save.keep_last)
 
-        self.best_score = -1e9 if self.monitor_mode == "max" else 1e9
+        self.best_metric = "val_iou_mean"
+        self.best_score = float("-inf")
 
-    def _is_better(self, score: float) -> bool:
-        return score > self.best_score if self.monitor_mode == "max" else score < self.best_score
+    def _make_best_payload(self, epoch: int) -> dict:
+        return {
+            "epoch": epoch,
+            "model_state_dict": self.model.state_dict(),
+            "best_score": self.best_score,
+            "best_metric": self.best_metric,
+        }
+
+    def _make_last_payload(self, epoch: int) -> dict:
+        return {
+            "epoch": epoch,
+            "model_state_dict": self.model.state_dict(),
+            "optimizer_state_dict": self.optimizer.state_dict(),
+            "scheduler_state_dict": self.scheduler.state_dict(),
+            "scaler_state_dict": self.scaler.state_dict() if self.scaler.is_enabled() else None,
+            "best_score": self.best_score,
+            "best_metric": self.best_metric,
+        }
 
     def fit(self, out_dir: Path, train_loader: DataLoader, val_loader: DataLoader) -> None:
+        out_dir = Path(out_dir)
         ensure_dir(out_dir)
+        save_config(out_dir / "config.yaml", self.cfg)
 
-        for epoch in range(1, int(self.cfg.train.num_epochs) + 1):
-            print(f"[Epoch {epoch:03d}/{int(self.cfg.train.num_epochs):03d}] {self.cfg.exp.name}")
+        history = {
+            "train_loss": [],
+            "val_iou_mean": [],
+            "val_hit": [],
+        }
+
+        print(f"{self.cfg.exp.name} 훈련 시작")
+
+        start_time = time.time()
+        num_epochs = int(self.train.num_epochs)
+
+        for epoch in range(1, num_epochs + 1):
+            print(f"[Epoch {epoch:02d}/{num_epochs:02d}] {self.cfg.exp.name}")
 
             train_metrics = train_one_epoch(
                 model=self.model,
-                loss_fn=self.loss_fn,
-                data_loader=train_loader,
+                train_loader=train_loader,
                 optimizer=self.optimizer,
                 device=self.device,
                 scaler=self.scaler,
-                amp=self.amp,
-                log_interval=int(self.cfg.train.log_interval),
+                amp=self.amp_enabled
             )
 
             val_metrics = evaluate_one_epoch(
                 model=self.model,
-                loss_fn=self.loss_fn,
-                data_loader=val_loader,
+                val_loader=val_loader,
                 device=self.device,
-                score_thr=float(self.cfg.train.metric.score_thr),
-                iou_thr=float(self.cfg.train.metric.iou_thr),
+                score_threshold=self.train.metric.score_threshold,
+                iou_threshold=self.train.metric.iou_threshold,
+                amp=self.amp_enabled
             )
 
-            score = float(val_metrics[self.monitor])
-            self.scheduler.step(score)
+            self.scheduler.step(val_metrics[self.best_metric])
 
-            msg = (
-                f"  train_loss={train_metrics['train_loss']:.4f} | "
-                f"val_iou_mean={val_metrics['val_iou_mean']:.4f} | "
-                f"val_precision={val_metrics['val_precision']:.4f}"
+            print(
+                f"Train loss={train_metrics['train_loss']:.4f} | "
+                f"Val IoU={val_metrics['val_iou_mean']:.4f} | "
+                f"Val Hit@{self.train.metric.iou_threshold:.2f}={val_metrics['val_hit']:.4f}"
             )
-            print(msg)
 
-            payload = {
-                "epoch": epoch,
-                "model_state_dict": self.model.state_dict(),
-                "optimizer_state_dict": self.optimizer.state_dict(),
-                "best_score": self.best_score,
-                "monitor": self.monitor,
-                "metrics": {**train_metrics, **val_metrics},
-            }
+            history["train_loss"].append(train_metrics["train_loss"])
+            history["val_iou_mean"].append(val_metrics["val_iou_mean"])
+            history["val_hit"].append(val_metrics["val_hit"])
 
-            # last
-            if bool(self.cfg.train.save.keep_last):
-                save_checkpoint(out_dir / "last.pt", payload)
+            score = val_metrics[self.best_metric]
 
-            # best
-            if self._is_better(score):
+            if score > self.best_score:
                 self.best_score = score
-                payload["best_score"] = self.best_score
-                save_checkpoint(out_dir / "best.pt", payload)
-                print(f"  best updated: {self.monitor}={self.best_score:.4f}")
+                ckpt = self._make_best_payload(epoch=epoch)
+                save_checkpoint(out_dir / "best.pt", ckpt)
+                print(f"  Best Updated: {self.best_metric}={self.best_score:.4f}")
+
+            if self.keep_last:
+                ckpt = self._make_last_payload(epoch=epoch)
+                save_checkpoint(out_dir / "last.pt", ckpt)
+
+        train_time = time.time() - start_time
+        save_history(
+            out_dir=out_dir,
+            history=history,
+            train_time=train_time,
+            best_score=self.best_score,
+            best_metric=self.best_metric,
+        )
+
+        print(
+            f"{self.cfg.exp.name} 훈련 완료, "
+            f"train_time: {train_time / 60:.1f}분, "
+            f"best_val_iou_mean: {self.best_score:.4f}\n"
+        )
