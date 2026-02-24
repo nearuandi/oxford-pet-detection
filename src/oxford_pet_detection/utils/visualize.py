@@ -25,11 +25,15 @@ def save_detection_viz(
         x1, y1, x2, y2 = [float(x) for x in b.tolist()]
 
         x1 = max(0.0, min(x1, W - 1.0))
-        x2 = max(0.0, min(x2, W - 1.0))
         y1 = max(0.0, min(y1, H - 1.0))
-        y2 = max(0.0, min(y2, H - 1.0))
+        x2 = max(0.0, min(x2, float(W)))
+        y2 = max(0.0, min(y2, float(H)))
 
         w, h = x2 - x1, y2 - y1
+
+        if w <= 1e-3 or h <= 1e-3:
+            continue
+
         ax.add_patch(plt.Rectangle((x1, y1), w, h, fill=False, linewidth=2))
 
         lab_i = int(lab)

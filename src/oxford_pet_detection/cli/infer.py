@@ -50,7 +50,7 @@ def run_infer(cfg: DictConfig) -> None:
         "boxes": result["boxes"].tolist(),
         "scores": result["scores"].tolist(),
         "labels": result["labels"].tolist(),
-        "class_names": list(result["class_names"])
+        "class_names": result["class_names"]
     }
     json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"saved: {json_path}")

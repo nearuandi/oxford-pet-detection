@@ -34,6 +34,7 @@ class Predictor:
         x = x.to(self.device)
 
         out = self.model([x])[0]
+
         boxes = out["boxes"].detach().cpu()
         scores = out["scores"].detach().cpu()
         labels = out["labels"].detach().cpu()
@@ -43,10 +44,14 @@ class Predictor:
         scores = scores[keep][: self.max_detections]
         labels = labels[keep][: self.max_detections]
 
+        # (C,H,W) -> (H,W,C)
+        viz = x.detach().cpu().permute(1, 2, 0).numpy() * 255.0
+        viz = viz.clip(0, 255).astype("uint8")
+
         return {
-            "image": img,
+            "image": viz,
             "boxes": boxes,
             "scores": scores,
             "labels": labels,
-            "class_names": self.dataset.class_names
+            "class_names": list(self.dataset.class_names),  # (json 저장도 안전)
         }
