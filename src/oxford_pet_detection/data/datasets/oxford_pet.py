@@ -8,18 +8,15 @@ from omegaconf import DictConfig
 from PIL import Image as PILImage
 from torch.utils.data import Dataset
 
-from oxford_pet_detection.utils.box_ops import masks_to_box_xyxy
-from oxford_pet_detection.utils.seed import make_rng
-
-
-
+from oxford_pet_detection.utils import masks_to_box_xyxy
+from oxford_pet_detection.utils import make_rng
 
 
 @dataclass(frozen=True, slots=True)
 class SampleIndex:
     image_path: Path
     mask_path: Path
-    species_id: int  # 1=cat, 2=dog (official trainval.txt 기준)
+    species_id: int  # 1=cat, 2=dog
 
 
 def read_official_trainval(root: Path) -> list[tuple[str, int]]:
@@ -44,26 +41,19 @@ def list_all_images(root: Path) -> list[str]:
 Split = Literal["train", "val"]
 
 class OxfordPetDetectionDataset(Dataset):
-    """
-    Oxford-IIIT Pet trimaps -> single bbox target
-    image당 pet 객체 1개 가정
-    """
-
     def __init__(self, cfg: DictConfig, split: Split, transform=None) -> None:
         self.cfg = cfg
         self.split = split
         self.transform = transform
 
-        root = Path(str(cfg.dataset.root))
-        images_dir = root / str(cfg.dataset.images_dir)
-        masks_dir = root / str(cfg.dataset.masks_dir)
+        root = Path(cfg.dataset.root)
+        images_dir = root / cfg.dataset.images_dir
+        masks_dir = root / cfg.dataset.masks_dir
 
-        label_mode = str(cfg.dataset.label_mode)
-        if label_mode not in {"pet", "species"}:
-            raise ValueError(f"Unsupported label_mode: {label_mode}")
+        label_mode = cfg.dataset.label_mode
 
-        official = bool(cfg.dataset.use_official_trainval)
-        if official:
+        official_train_val = cfg.dataset.official_trainval
+        if official_train_val:
             pairs = read_official_trainval(root)
             if not pairs:
                 names = list_all_images(root)
@@ -79,11 +69,11 @@ class OxfordPetDetectionDataset(Dataset):
             if img_p.exists() and msk_p.exists():
                 samples.append(SampleIndex(image_path=img_p, mask_path=msk_p, species_id=species_id))
 
-        rng = make_rng(int(cfg.dataset.seed))
+        rng = make_rng(cfg.dataset.seed)
         idx = np.arange(len(samples))
         rng.shuffle(idx)
 
-        train_ratio = float(cfg.dataset.train_ratio)
+        train_ratio = cfg.dataset.train_ratio
         n_train = int(len(idx) * train_ratio)
         train_idx = idx[:n_train]
         val_idx = idx[n_train:]
@@ -113,9 +103,9 @@ class OxfordPetDetectionDataset(Dataset):
         img_pil = self._load_image(s.image_path)
         mask = self._load_mask(s.mask_path)
 
-        obj = (mask != 2).astype(np.uint8)  # background 제외
-        box = masks_to_box_xyxy(obj)        # (4,)
-        boxes = torch.tensor([box], dtype=torch.float32)
+        obj = (mask != 2).astype(np.uint8)
+        box = masks_to_box_xyxy(obj)
+        boxes = torch.from_numpy(box).to(torch.float32).unsqueeze(0)  # (1,4)
 
         if self.label_mode == "pet":
             label = 1
@@ -131,11 +121,9 @@ class OxfordPetDetectionDataset(Dataset):
             "path": str(s.image_path),
         }
 
-        # ✅ 핵심 변경: image + target 함께 transform
         if self.transform is not None:
             image, target = self.transform(img_pil, target)
         else:
-            # fallback: 최소 tensor 변환만
             image = torch.from_numpy(np.array(img_pil, dtype=np.uint8)).permute(2, 0, 1).float() / 255.0
 
         target["class_names"] = self.class_names
