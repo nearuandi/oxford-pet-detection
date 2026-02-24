@@ -1,7 +1,7 @@
 defaults:
   - paths: paths
   - dataset: oxford_pet
-  - model: fasterrcnn_resnet50_fpn_v2
+  - model: fasterrcnn_mobilenet_v3_large_fpn
   - train: train
   - exp: base
   - _self_
@@ -9,3 +9,5 @@ defaults:
 hydra:
   job:
     chdir: false
+
+image_path: "sample.jpg"

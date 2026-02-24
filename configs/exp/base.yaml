@@ -1,1 +1,1 @@
-name: base
+name: ${model.name}

@@ -4,7 +4,7 @@ root: ${paths.data_dir}
 images_dir: images
 masks_dir: annotations/trimaps
 
-use_official_trainval: true
+official_trainval: true
 train_ratio: 0.9
 seed: 42
 
