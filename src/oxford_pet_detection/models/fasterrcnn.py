@@ -19,13 +19,13 @@ def _replace_predictor(model: FasterRCNN, num_classes: int) -> FasterRCNN:
 
 def build_fasterrcnn_resnet50_fpn_v2(
     num_classes: int,
-    pretrained: bool = True,
-    trainable_backbone_layers: int = 3,
+    pretrained,
+    trainable_backbone_layers
 ) -> nn.Module:
     weights = FasterRCNN_ResNet50_FPN_V2_Weights.DEFAULT if pretrained else None
     model = fasterrcnn_resnet50_fpn_v2(
         weights=weights,
-        trainable_backbone_layers=trainable_backbone_layers,
+        trainable_backbone_layers=trainable_backbone_layers
     )
     return _replace_predictor(model, num_classes)
 
