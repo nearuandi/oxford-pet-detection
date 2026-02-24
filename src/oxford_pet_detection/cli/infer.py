@@ -1,35 +1,56 @@
 from pathlib import Path
-
+import json
+import torch
 from omegaconf import DictConfig
 
 from oxford_pet_detection.pipelines import Predictor
-from oxford_pet_detection.utils import save_detection_viz
+from oxford_pet_detection.utils import save_detection_viz, ensure_dir
 
 
-def run_infer(
-    cfg: DictConfig,
-    weights_path: Path,
-    image_path_or_url: str,
-    save_path: str | None = None,
-    print_json: bool = False,
-) -> None:
-    predictor = Predictor(cfg=cfg, weights_path=weights_path)
-    pred = predictor.predict(image_path_or_url=image_path_or_url)
+def run_infer(cfg: DictConfig) -> None:
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    out_dir = Path(cfg.paths.out_dir) / str(cfg.exp.name)
+    best_path = out_dir / "best.pt"
 
-    if print_json:
-        print(pred)
+    infer_dir = out_dir / "infer"
+    ensure_dir(infer_dir)
 
-    if save_path is not None:
-        save_detection_viz(
-            image=pred["image"],
-            boxes=pred["boxes"],
-            scores=pred["scores"],
-            labels=pred["labels"],
-            class_names=pred["class_names"],
-            save_path=Path(save_path),
-        )
-        print(f"saved: {save_path}")
+    png_path = infer_dir / "image.png"
+    json_path = infer_dir / "infer.json"
+
+    ckpt = torch.load(best_path, map_location=device)
+
+    image_path = str(cfg.image_path)
+    predictor = Predictor(cfg=cfg, ckpt=ckpt, device=device)
+    result = predictor.predict(image_path_or_url=image_path)
+
+    num_detections = len(result["boxes"])
+    print(f"num_detections={num_detections}")
+    if num_detections > 0:
+        top1_score = float(result["scores"][0])
+        top1_box = result["boxes"][0].tolist()
+        top1_label = int(result["labels"][0])
+        top1_name = result["class_names"][top1_label] if top1_label < len(result["class_names"]) else str(top1_label)
+        print(f"top1: label={top1_label}({top1_name}) score={top1_score:.3f} box={top1_box}")
     else:
-        print(f"num_detections={len(pred['boxes'])}")
-        if len(pred["boxes"]) > 0:
-            print(f"top1 score={float(pred['scores'][0]):.3f} box={pred['boxes'][0].tolist()}")
+        print("no detections above threshold")
+
+    save_detection_viz(
+        image=result["image"],
+        boxes=result["boxes"],
+        scores=result["scores"],
+        labels=result["labels"],
+        class_names=result["class_names"],
+        save_path=png_path,
+    )
+    print(f"saved: {png_path}")
+
+    payload = {
+        "image_path_or_url": image_path,
+        "boxes": result["boxes"].tolist(),
+        "scores": result["scores"].tolist(),
+        "labels": result["labels"].tolist(),
+        "class_names": list(result["class_names"])
+    }
+    json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"saved: {json_path}")
