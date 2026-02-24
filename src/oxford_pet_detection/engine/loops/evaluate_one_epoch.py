@@ -1,7 +1,7 @@
-from collections.abc import Iterable
-
 import torch
 import torch.nn as nn
+from torch.amp import autocast
+from torch.utils.data import DataLoader
 
 from oxford_pet_detection.utils import box_iou_xyxy
 
@@ -9,49 +9,73 @@ from oxford_pet_detection.utils import box_iou_xyxy
 @torch.inference_mode()
 def evaluate_one_epoch(
     model: nn.Module,
-    loss_fn: nn.Module,  # unused (kept)
-    data_loader: Iterable,
+    val_loader: DataLoader,
     device: torch.device,
-    score_thr: float = 0.5,
-    iou_thr: float = 0.5,
-) -> dict:
+    score_threshold: float = 0.5,
+    iou_threshold: float = 0.5,
+    amp: bool = True,
+) -> dict[str, float]:
+
     model.eval()
 
-    ious: list[float] = []
-    correct = 0
-    total = 0
+    use_autocast = bool(amp) and (device.type == "cuda")
 
-    for images, targets in data_loader:
-        images = [img.to(device) for img in images]
-        # model(images) -> detections
-        outputs = model(images)
+    # IoU : Intersection over Union
+    # 예측한 박스가 정답 박스랑 얼마나 겹치는지
+    # (겹친 영역의 넓이) / (전체 합친 영역의 넓이)
+    sum_iou = 0.0
+    sum_count = 0
+    # IoU가 threshold 이상인 샘플 수
+    hit = 0
 
-        for out, tgt in zip(outputs, targets):
-            gt_box = tgt["boxes"][0].to(device)  # (4,)
-            pred_boxes = out["boxes"]
-            pred_scores = out["scores"]
+    for images, targets in val_loader:
+        x = [img.to(device, non_blocking=True) for img in images]
 
-            keep = pred_scores >= score_thr
+        with autocast(device_type=device.type, enabled=use_autocast):
+            outputs = model(x)
+
+        for output, target in zip(outputs, targets):
+            gt_boxes = target.get("boxes")
+            if gt_boxes is None or gt_boxes.numel() == 0:
+                continue
+
+            gt_boxes = gt_boxes.to(device, non_blocking=True)
+            # ground truth box, 정답 위치 박스
+            # [0] 첫 번째 정답 박스만 사용
+            gt_box = gt_boxes[0]  # (4,)
+
+            pred_boxes = output.get("boxes", None)
+            pred_scores = output.get("scores", None)
+
+            sum_count += 1
+
+            if pred_boxes is None or pred_scores is None or pred_boxes.numel() == 0:
+                continue
+
+            pred_boxes = pred_boxes.to(device, non_blocking=True)
+            pred_scores = pred_scores.to(device, non_blocking=True)
+
+            keep = pred_scores >= score_threshold
             pred_boxes = pred_boxes[keep]
             pred_scores = pred_scores[keep]
 
-            total += 1
             if pred_boxes.numel() == 0:
-                ious.append(0.0)
                 continue
 
-            # top-1
-            top_idx = int(torch.argmax(pred_scores).item())
-            pb = pred_boxes[top_idx]
+            # score_threshold 통과한 pred 중에서 GT와 IoU가 가장 큰 값 사용
+            ious = box_iou_xyxy(pred_boxes, gt_box.unsqueeze(0)).squeeze(1)  # (N,)
+            iou = float(ious.max().item())
+            sum_iou += iou
 
-            iou = float(box_iou_xyxy(pb.unsqueeze(0), gt_box.unsqueeze(0)).item())
-            ious.append(iou)
-            if iou >= iou_thr:
-                correct += 1
+            if iou >= iou_threshold:
+                hit += 1
 
-    iou_mean = float(sum(ious) / max(len(ious), 1))
-    precision = float(correct / max(total, 1))
-    return {
-        "val_iou_mean": iou_mean,
-        "val_precision": precision,
+    val_iou_mean = sum_iou / max(1, sum_count)
+    val_hit = hit / max(1, sum_count)
+
+    val_metrics = {
+        "val_iou_mean": val_iou_mean,
+        "val_hit": val_hit,
     }
+
+    return val_metrics
