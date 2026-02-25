@@ -24,8 +24,7 @@ def read_official_trainval(
 
     rows: list[tuple[str, int]] = []
     for line in p.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
+
         parts = line.split()
         image_name = parts[0]
         species_id = int(parts[2])
@@ -70,12 +69,14 @@ def split_samples(
         cfg: DictConfig,
         samples: list[SampleIndex]
 ) -> tuple[list[SampleIndex], list[SampleIndex]]:
-    rng = make_rng(cfg.dataset.seed)
+    dataset = cfg.dataset
+
+    rng = make_rng(dataset.seed)
 
     idx = np.arange(len(samples))
     rng.shuffle(idx)
 
-    n_train = int(len(idx) * float(cfg.dataset.train_ratio))
+    n_train = int(len(idx) * float(dataset.train_ratio))
     train_idx = idx[:n_train]
     val_idx = idx[n_train:]
 
@@ -90,35 +91,38 @@ def build_datamodule(cfg: DictConfig) -> DataModule:
 
     samples = build_samples(cfg)
     train_samples, val_samples = split_samples(cfg, samples)
+    
+    dataset = cfg.dataset
+    train = cfg.train
 
     train_ds = OxfordPetDetectionDataset(
         samples=train_samples,
-        label_mode=cfg.dataset.label_mode,
+        label_mode=dataset.label_mode,
         transform=train_transform,
     )
     val_ds = OxfordPetDetectionDataset(
         samples=val_samples,
-        label_mode=cfg.dataset.label_mode,
+        label_mode=dataset.label_mode,
         transform=eval_transform,
     )
 
     train_loader = DataLoader(
         dataset=train_ds,
-        batch_size=cfg.train.batch_size,
+        batch_size=train.batch_size,
         shuffle=True,
-        num_workers=cfg.train.num_workers,
-        pin_memory=cfg.train.pin_memory,
-        persistent_workers=cfg.train.persistent_workers,
+        num_workers=train.num_workers,
+        pin_memory=train.pin_memory,
+        persistent_workers=train.persistent_workers,
         collate_fn=detection_collate,
     )
 
     val_loader = DataLoader(
         dataset=val_ds,
-        batch_size=cfg.train.batch_size,
+        batch_size=train.batch_size,
         shuffle=False,
-        num_workers=cfg.train.num_workers,
-        pin_memory=cfg.train.pin_memory,
-        persistent_workers=cfg.train.persistent_workers,
+        num_workers=train.num_workers,
+        pin_memory=train.pin_memory,
+        persistent_workers=train.persistent_workers,
         collate_fn=detection_collate,
     )
 

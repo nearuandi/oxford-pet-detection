@@ -7,6 +7,7 @@ def build_train_transform(cfg: DictConfig):
     return T.Compose([
         T.Resize((dataset.image_size, dataset.image_size)),
         T.RandomHorizontalFlip(p=0.5),
+        T.ToImage(),
         T.ToDtype(torch.float32, scale=True),
     ])
 
@@ -15,5 +16,6 @@ def build_eval_transform(cfg: DictConfig):
     dataset = cfg.dataset
     return T.Compose([
         T.Resize((dataset.image_size, dataset.image_size)),
+        T.ToImage(),
         T.ToDtype(torch.float32, scale=True),
     ])
