@@ -1,8 +1,8 @@
 seed: 42
 
-num_epochs: 15
+num_epochs: 10
 batch_size: 8
-num_workers: 4
+num_workers: 8
 pin_memory: true
 persistent_workers: true
 drop_last: true
@@ -11,7 +11,7 @@ amp: true
 
 optimizer:
   name: adamw
-  lr: 2.0e-4
+  lr: 3e-4
   weight_decay: 1.0e-4
 
 scheduler:

@@ -7,9 +7,9 @@ masks_dir: annotations/trimaps
 train_ratio: 0.9
 seed: 42
 
-label_mode: pet
+label_mode: species
 
-num_classes: 2
-class_names: ["__background__", "pet"]
+num_classes: 3
+class_names: ["__background__", "cat", "dog"]
 
-image_size: null
+image_size: 512

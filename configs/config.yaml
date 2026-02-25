@@ -10,4 +10,4 @@ hydra:
   job:
     chdir: false
 
-image_path: "sample.jpg"
+image_path: sample.jpg
