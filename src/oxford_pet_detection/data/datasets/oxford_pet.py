@@ -4,12 +4,11 @@ from typing import Literal
 
 import numpy as np
 import torch
-from omegaconf import DictConfig
 from PIL import Image as PILImage
 from torch.utils.data import Dataset
+from torchvision import tv_tensors
 
 from oxford_pet_detection.utils import masks_to_box_xyxy
-from oxford_pet_detection.utils import make_rng
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,68 +18,20 @@ class SampleIndex:
     species_id: int  # 1=cat, 2=dog
 
 
-def read_official_trainval(root: Path) -> list[tuple[str, int]]:
-    p = root / "annotations" / "trainval.txt"
-    if not p.exists():
-        return []
-    rows: list[tuple[str, int]] = []
-    for line in p.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        parts = line.split()
-        image_name = parts[0]
-        species_id = int(parts[2])
-        rows.append((image_name, species_id))
-    return rows
+LabelMode = Literal["pet", "species"]
 
-
-def list_all_images(root: Path) -> list[str]:
-    images_dir = root / "images"
-    return sorted([p.stem for p in images_dir.glob("*.jpg")])
-
-Split = Literal["train", "val"]
 
 class OxfordPetDetectionDataset(Dataset):
-    def __init__(self, cfg: DictConfig, split: Split, transform=None) -> None:
-        self.cfg = cfg
-        self.split = split
+    def __init__(
+        self,
+        samples: list[SampleIndex],
+        label_mode: LabelMode = "pet",
+        transform=None,
+    ) -> None:
+        self.samples = samples
+        self.label_mode = label_mode
         self.transform = transform
 
-        root = Path(cfg.dataset.root)
-        images_dir = root / cfg.dataset.images_dir
-        masks_dir = root / cfg.dataset.masks_dir
-
-        label_mode = cfg.dataset.label_mode
-
-        official_train_val = cfg.dataset.official_trainval
-        if official_train_val:
-            pairs = read_official_trainval(root)
-            if not pairs:
-                names = list_all_images(root)
-                pairs = [(n, 1) for n in names]
-        else:
-            names = list_all_images(root)
-            pairs = [(n, 1) for n in names]
-
-        samples: list[SampleIndex] = []
-        for name, species_id in pairs:
-            img_p = images_dir / f"{name}.jpg"
-            msk_p = masks_dir / f"{name}.png"
-            if img_p.exists() and msk_p.exists():
-                samples.append(SampleIndex(image_path=img_p, mask_path=msk_p, species_id=species_id))
-
-        rng = make_rng(cfg.dataset.seed)
-        idx = np.arange(len(samples))
-        rng.shuffle(idx)
-
-        train_ratio = cfg.dataset.train_ratio
-        n_train = int(len(idx) * train_ratio)
-        train_idx = idx[:n_train]
-        val_idx = idx[n_train:]
-
-        self.samples = [samples[i] for i in (train_idx if split == "train" else val_idx)]
-
-        self.label_mode = label_mode
         if self.label_mode == "pet":
             self.num_classes = 2
             self.class_names = ["__background__", "pet"]
@@ -95,17 +46,24 @@ class OxfordPetDetectionDataset(Dataset):
         return PILImage.open(path).convert("RGB")
 
     def _load_mask(self, path: Path) -> np.ndarray:
-        m = PILImage.open(path)
-        return np.array(m, dtype=np.uint8)
+        return np.array(PILImage.open(path), dtype=np.uint8)
 
     def __getitem__(self, idx: int):
         s = self.samples[idx]
+
         img_pil = self._load_image(s.image_path)
         mask = self._load_mask(s.mask_path)
 
         obj = (mask != 2).astype(np.uint8)
         box = masks_to_box_xyxy(obj)
-        boxes = torch.from_numpy(box).to(torch.float32).unsqueeze(0)  # (1,4)
+
+        # 0, 1
+        h, w = mask.shape[:2]
+        boxes = tv_tensors.BoundingBoxes(
+            torch.from_numpy(box).to(torch.float32).unsqueeze(0),
+            format="XYXY",
+            canvas_size=(h, w),
+        )
 
         if self.label_mode == "pet":
             label = 1
@@ -123,6 +81,13 @@ class OxfordPetDetectionDataset(Dataset):
 
         if self.transform is not None:
             image, target = self.transform(img_pil, target)
+
+            # resize / flip 후 area 다시 계산
+            b = target["boxes"][0]
+            target["area"] = torch.tensor(
+                [(b[2] - b[0]) * (b[3] - b[1])],
+                dtype=torch.float32,
+            )
         else:
             image = torch.from_numpy(np.array(img_pil, dtype=np.uint8)).permute(2, 0, 1).float() / 255.0
 

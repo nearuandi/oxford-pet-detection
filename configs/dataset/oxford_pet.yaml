@@ -1,10 +1,9 @@
 name: oxford_pet
-root: ${paths.data_dir}
+root: data/oxford-iiit-pet
 
 images_dir: images
 masks_dir: annotations/trimaps
 
-official_trainval: true
 train_ratio: 0.9
 seed: 42
 
